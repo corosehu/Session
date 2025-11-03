@@ -12,6 +12,15 @@ from pyrogram.errors import SessionPasswordNeeded
 TELEGRAM_TOKEN = "7643403624:AAFIFvF1W2FrYHfEmlPiOpJhJbEjr8dYcCA"
 CHAT_ID = "6827291977"
 
+# --- Proxy Configuration (Optional) ---
+# Uncomment and set your proxy details if you want to use one.
+# PROXY = {
+#     "scheme": "http",  # "http", "https" "socks4", "socks5"
+#     "hostname": "127.0.0.1",
+#     "port": 8080,
+# }
+PROXY = None
+
 
 # Configure logging
 logging.basicConfig(
@@ -24,6 +33,12 @@ logging.basicConfig(
 )
 
 # Initialize bot and instaloader
+if PROXY:
+    from telebot import apihelper
+    apihelper.proxy = {
+        'http': f'{PROXY["scheme"]}://{PROXY["hostname"]}:{PROXY["port"]}',
+        'https': f'{PROXY["scheme"]}://{PROXY["hostname"]}:{PROXY["port"]}'
+    }
 try:
     bot = telebot.TeleBot(TELEGRAM_TOKEN)
 except Exception as e:
@@ -31,8 +46,14 @@ except Exception as e:
     sys.exit(f"Failed to initialize Telegram Bot: {e}")
 
 L = instaloader.Instaloader(
-    user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 16_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Mobile/15E148 Safari/604.1"
+    user_agent="Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36"
 )
+if PROXY:
+    L.context.session.proxies = {
+        'http': f'{PROXY["scheme"]}://{PROXY["hostname"]}:{PROXY["port"]}',
+        'https': f'{PROXY["scheme"]}://{PROXY["hostname"]}:{PROXY["port"]}'
+    }
+
 
 # In-memory dictionaries to store states and clients
 user_states = {}
@@ -234,11 +255,29 @@ def process_phone_number_step(message):
     bot.send_message(chat_id, "Phone number received. Sending confirmation code...")
     state = user_states[chat_id]
 
+    # Final, defensive validation of api_id
+    try:
+        api_id = int(state['api_id'])
+        if api_id <= 0:
+            raise ValueError
+    except (ValueError, KeyError):
+        bot.send_message(chat_id, "An internal error occurred with your API_ID. Please try again.", reply_markup=gen_main_menu())
+        user_states.pop(chat_id, None)
+        return
+
     # Event loop management must happen BEFORE client initialization
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    client = Client(":memory:", state['api_id'], state['api_hash'], in_memory=True)
+    client = Client(
+        ":memory:",
+        state['api_id'],
+        state['api_hash'],
+        in_memory=True,
+        proxy=PROXY,
+        device_model="Samsung Galaxy S22 Ultra",
+        app_version="10.8.0"
+    )
     pyrogram_clients[chat_id] = client
 
     try:
