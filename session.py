@@ -3,8 +3,10 @@ import sys
 import telebot
 import instaloader
 import logging
+import asyncio
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram import Client
+from pyrogram.errors import SessionPasswordNeeded
 
 # --- Configuration ---
 TELEGRAM_TOKEN = "7643403624:AAFIFvF1W2FrYHfEmlPiOpJhJbEjr8dYcCA"
@@ -34,6 +36,35 @@ L = instaloader.Instaloader(
 
 # In-memory dictionary to store user login states
 user_states = {}
+
+# --- Async Helper Functions for Pyrogram ---
+
+async def telegram_send_code(api_id, api_hash, phone_number):
+    """Creates a client, connects, sends the login code, and returns necessary data."""
+    client = Client(":memory:", api_id=api_id, api_hash=api_hash, in_memory=True)
+    await client.connect()
+    sent_code = await client.send_code(phone_number)
+    session_string = await client.export_session_string()
+    await client.disconnect()
+    return sent_code.phone_code_hash, session_string
+
+async def telegram_finish_login(api_id, api_hash, phone_number, phone_code_hash, session_string, code, password=None):
+    """Restores a client and completes the login to get the final session string."""
+    client = Client(name=":memory:", session_string=session_string, api_id=api_id, api_hash=api_hash, in_memory=True)
+    await client.connect()
+    try:
+        await client.sign_in(phone_number, phone_code_hash, code)
+    except SessionPasswordNeeded:
+        if password:
+            await client.check_password(password)
+        else:
+            await client.disconnect()
+            return "2FA_REQUIRED"
+
+    final_session_string = await client.export_session_string()
+    await client.disconnect()
+    return final_session_string
+
 
 def gen_main_menu():
     markup = InlineKeyboardMarkup()
@@ -148,25 +179,13 @@ def complete_login(chat_id, username):
     logging.info(f"Session file saved for {username}.")
 
     session_id = L.context.session.cookies.get("sessionid")
-    # The user ID is the correct value for 'ds_user_id' in this context
     ds_user_id = L.context.userid
     x_ig_app_id = L.context.app_id
 
     response_message = f"""
 Login successful for `{username}`!
 Session file has been created on the server.
-
-Here are your session details:
------------------------------------
-`Your session id`:
-`{session_id}`
-
-`Your cookie id (user id)`:
-`{ds_user_id}`
-
-`X-IG-APP ID`:
-`{x_ig_app_id}`
------------------------------------
+...
 """
     bot.send_message(chat_id, response_message, parse_mode="Markdown", reply_markup=gen_main_menu())
     if chat_id in user_states:
@@ -175,86 +194,114 @@ Here are your session details:
 
 # --- Telegram Session Generation ---
 def handle_telegram_login_start(message):
-    """Starts the interactive login process for Telegram."""
     chat_id = message.chat.id
     msg = bot.send_message(chat_id, "Please enter your API_ID:", reply_markup=gen_cancel_markup())
     bot.register_next_step_handler(msg, process_api_id_step)
 
 def process_api_id_step(message):
-    """Processes the API_ID and asks for the API_HASH."""
     chat_id = message.chat.id
-    api_id = message.text
-    user_states[chat_id] = {'api_id': api_id}
-    try:
-        bot.delete_message(chat_id, message.message_id)
-    except Exception as e:
-        logging.warning(f"Could not delete API_ID message: {e}")
+    user_states[chat_id] = {'api_id': message.text}
+    try: bot.delete_message(chat_id, message.message_id)
+    except Exception as e: logging.warning(f"Could not delete API_ID message: {e}")
     msg = bot.send_message(chat_id, "API_ID received. Now, please enter your API_HASH.", reply_markup=gen_cancel_markup())
     bot.register_next_step_handler(msg, process_api_hash_step)
 
 def process_api_hash_step(message):
-    """Processes the API_HASH and asks for the phone number."""
     chat_id = message.chat.id
-    api_hash = message.text
-    user_states[chat_id]['api_hash'] = api_hash
-    try:
-        bot.delete_message(chat_id, message.message_id)
-    except Exception as e:
-        logging.warning(f"Could not delete API_HASH message: {e}")
+    user_states[chat_id]['api_hash'] = message.text
+    try: bot.delete_message(chat_id, message.message_id)
+    except Exception as e: logging.warning(f"Could not delete API_HASH message: {e}")
     msg = bot.send_message(chat_id, "API_HASH received. Now, please enter your phone number (with country code).", reply_markup=gen_cancel_markup())
     bot.register_next_step_handler(msg, process_phone_number_step)
 
 def process_phone_number_step(message):
-    """Processes the phone number and attempts to log in."""
     chat_id = message.chat.id
-    phone_number = message.text
-    user_states[chat_id]['phone_number'] = phone_number
-    try:
-        bot.delete_message(chat_id, message.message_id)
-    except Exception as e:
-        logging.warning(f"Could not delete phone number message: {e}")
-    bot.send_message(chat_id, "Phone number received. Trying to log in...")
+    user_states[chat_id]['phone_number'] = message.text
+    try: bot.delete_message(chat_id, message.message_id)
+    except Exception as e: logging.warning(f"Could not delete phone number message: {e}")
+    bot.send_message(chat_id, "Phone number received. Sending confirmation code...")
 
     api_id = user_states[chat_id]['api_id']
     api_hash = user_states[chat_id]['api_hash']
+    phone_number = user_states[chat_id]['phone_number']
 
-    client = Client(":memory:", api_id=api_id, api_hash=api_hash)
+    # Event loop management
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     try:
-        client.connect()
-        sent_code = client.send_code(phone_number)
-        user_states[chat_id]['phone_code_hash'] = sent_code.phone_code_hash
-        msg = bot.send_message(chat_id, "A code has been sent to your Telegram account. Please enter the code.", reply_markup=gen_cancel_markup())
-        bot.register_next_step_handler(msg, process_telegram_code_step, client)
+        phone_code_hash, session_string = loop.run_until_complete(
+            telegram_send_code(api_id, api_hash, phone_number)
+        )
+        user_states[chat_id]['phone_code_hash'] = phone_code_hash
+        user_states[chat_id]['session_string'] = session_string
+        msg = bot.send_message(chat_id, "A code has been sent to your Telegram account. Please enter it.", reply_markup=gen_cancel_markup())
+        bot.register_next_step_handler(msg, process_telegram_code_step)
     except Exception as e:
         logging.error(f"An unexpected error occurred during Telegram login: {e}")
-        bot.send_message(chat_id, f"An unexpected error occurred: {e}. Please try /start again.", reply_markup=gen_main_menu())
-        if chat_id in user_states:
-            del user_states[chat_id]
+        bot.send_message(chat_id, f"An error occurred: {e}. Please try /start again.", reply_markup=gen_main_menu())
+        user_states.pop(chat_id, None)
+    finally:
+        loop.close()
 
-def process_telegram_code_step(message, client):
-    """Processes the Telegram code and completes the login."""
+def process_telegram_code_step(message):
     chat_id = message.chat.id
     code = message.text
-    phone_number = user_states[chat_id]['phone_number']
-    phone_code_hash = user_states[chat_id]['phone_code_hash']
-    try:
-        bot.delete_message(chat_id, message.message_id)
-    except Exception as e:
-        logging.warning(f"Could not delete Telegram code message: {e}")
+    try: bot.delete_message(chat_id, message.message_id)
+    except Exception as e: logging.warning(f"Could not delete Telegram code message: {e}")
+
+    state = user_states[chat_id]
+
+    # Event loop management
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
     try:
-        client.sign_in(phone_number, phone_code_hash, code)
-        session_string = client.export_session_string()
+        session_string = loop.run_until_complete(
+            telegram_finish_login(
+                state['api_id'], state['api_hash'], state['phone_number'],
+                state['phone_code_hash'], state['session_string'], code
+            )
+        )
+        if session_string == "2FA_REQUIRED":
+            msg = bot.send_message(chat_id, "Two-factor authentication is enabled. Please enter your password.", reply_markup=gen_cancel_markup())
+            bot.register_next_step_handler(msg, process_telegram_2fa_step)
+        else:
+            bot.send_message(chat_id, f"Login successful! Here is your session string:\n\n`{session_string}`", parse_mode="Markdown", reply_markup=gen_main_menu())
+            user_states.pop(chat_id, None)
+    except Exception as e:
+        logging.error(f"Failed during Telegram code verification: {e}")
+        bot.send_message(chat_id, f"Login failed: {e}. Please try /start again.", reply_markup=gen_main_menu())
+        user_states.pop(chat_id, None)
+    finally:
+        loop.close()
+
+def process_telegram_2fa_step(message):
+    chat_id = message.chat.id
+    password = message.text
+    try: bot.delete_message(chat_id, message.message_id)
+    except Exception as e: logging.warning(f"Could not delete 2FA password message: {e}")
+
+    state = user_states[chat_id]
+
+    # Event loop management
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        session_string = loop.run_until_complete(
+            telegram_finish_login(
+                state['api_id'], state['api_hash'], state['phone_number'],
+                state['phone_code_hash'], state['session_string'], state.get('code'), password=password
+            )
+        )
         bot.send_message(chat_id, f"Login successful! Here is your session string:\n\n`{session_string}`", parse_mode="Markdown", reply_markup=gen_main_menu())
-        client.disconnect()
-        if chat_id in user_states:
-            del user_states[chat_id]
     except Exception as e:
         logging.error(f"Failed during Telegram 2FA login: {e}")
-        bot.send_message(chat_id, "2FA login failed. The code may have been incorrect or an error occurred. Please try /start again.", reply_markup=gen_main_menu())
-        if chat_id in user_states:
-            del user_states[chat_id]
-
+        bot.send_message(chat_id, f"2FA login failed: {e}. Please try /start again.", reply_markup=gen_main_menu())
+    finally:
+        user_states.pop(chat_id, None)
+        loop.close()
 
 if __name__ == "__main__":
     logging.info("Session generation bot started.")
