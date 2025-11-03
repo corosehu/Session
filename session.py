@@ -3,6 +3,8 @@ import sys
 import telebot
 import instaloader
 import logging
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram import Client
 
 # --- Configuration ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -40,16 +42,38 @@ L = instaloader.Instaloader(
 # In-memory dictionary to store user login states
 user_states = {}
 
-@bot.message_handler(commands=['login'])
-def handle_login_start(message):
-    """Starts the interactive login process."""
-    chat_id = message.chat.id
-    # Optional: Add user authorization check here if needed
-    # if str(chat_id) != CHAT_ID:
-    #     bot.send_message(chat_id, "You are not authorized to use this bot.")
-    #     return
+def gen_main_menu():
+    markup = InlineKeyboardMarkup()
+    markup.row_width = 2
+    markup.add(InlineKeyboardButton("Instagram Session", callback_data="cb_instagram"),
+               InlineKeyboardButton("Telegram Session", callback_data="cb_telegram"))
+    return markup
 
-    msg = bot.send_message(chat_id, "Please enter your Instagram username:")
+def gen_cancel_markup():
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("Cancel", callback_data="cb_cancel"))
+    return markup
+
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    bot.send_message(message.chat.id, "Welcome! Please choose a session to generate:", reply_markup=gen_main_menu())
+
+@bot.callback_query_handler(func=lambda call: True)
+def callback_query(call):
+    if call.data == "cb_instagram":
+        handle_instagram_login_start(call.message)
+    elif call.data == "cb_telegram":
+        handle_telegram_login_start(call.message)
+    elif call.data == "cb_cancel":
+        user_states.pop(call.message.chat.id, None)
+        bot.send_message(call.message.chat.id, "Operation cancelled.", reply_markup=gen_main_menu())
+
+
+# --- Instagram Session Generation ---
+def handle_instagram_login_start(message):
+    """Starts the interactive login process for Instagram."""
+    chat_id = message.chat.id
+    msg = bot.send_message(chat_id, "Please enter your Instagram username:", reply_markup=gen_cancel_markup())
     bot.register_next_step_handler(msg, process_username_step)
 
 def process_username_step(message):
@@ -64,7 +88,7 @@ def process_username_step(message):
     except Exception as e:
         logging.warning(f"Could not delete username message: {e}")
 
-    msg = bot.send_message(chat_id, f"Username `{username}` received. Now, please enter your password.", parse_mode="Markdown")
+    msg = bot.send_message(chat_id, f"Username `{username}` received. Now, please enter your password.", parse_mode="Markdown", reply_markup=gen_cancel_markup())
     bot.register_next_step_handler(msg, process_password_step)
 
 def process_password_step(message):
@@ -89,17 +113,17 @@ def process_password_step(message):
 
     except instaloader.exceptions.TwoFactorAuthRequiredException:
         logging.info(f"2FA required for user {username}.")
-        bot.send_message(chat_id, "Two-factor authentication is required. Please enter the 2FA code.")
-        bot.register_next_step_handler(message, process_2fa_step, password)
+        msg = bot.send_message(chat_id, "Two-factor authentication is required. Please enter the 2FA code.", reply_markup=gen_cancel_markup())
+        bot.register_next_step_handler(msg, process_2fa_step, password)
 
     except instaloader.exceptions.BadCredentialsException:
         logging.error(f"Login failed for {username}: Bad credentials.")
-        bot.send_message(chat_id, "Login failed: The username or password you entered is incorrect. Please try /login again.")
+        bot.send_message(chat_id, "Login failed: The username or password you entered is incorrect. Please try /start again.", reply_markup=gen_main_menu())
         del user_states[chat_id]
 
     except Exception as e:
         logging.error(f"An unexpected error occurred during login for {username}: {e}")
-        bot.send_message(chat_id, f"An unexpected error occurred: {e}. Please try /login again.")
+        bot.send_message(chat_id, f"An unexpected error occurred: {e}. Please try /start again.", reply_markup=gen_main_menu())
         if chat_id in user_states:
             del user_states[chat_id]
 
@@ -121,7 +145,7 @@ def process_2fa_step(message, password):
         complete_login(chat_id, username)
     except Exception as e:
         logging.error(f"Failed during 2FA login for {username}: {e}")
-        bot.send_message(chat_id, "2FA login failed. The code may have been incorrect or an error occurred. Please try /login again.")
+        bot.send_message(chat_id, "2FA login failed. The code may have been incorrect or an error occurred. Please try /start again.", reply_markup=gen_main_menu())
         if chat_id in user_states:
             del user_states[chat_id]
 
@@ -151,9 +175,93 @@ Here are your session details:
 `{x_ig_app_id}`
 -----------------------------------
 """
-    bot.send_message(chat_id, response_message, parse_mode="Markdown")
+    bot.send_message(chat_id, response_message, parse_mode="Markdown", reply_markup=gen_main_menu())
     if chat_id in user_states:
         del user_states[chat_id]
+
+
+# --- Telegram Session Generation ---
+def handle_telegram_login_start(message):
+    """Starts the interactive login process for Telegram."""
+    chat_id = message.chat.id
+    msg = bot.send_message(chat_id, "Please enter your API_ID:", reply_markup=gen_cancel_markup())
+    bot.register_next_step_handler(msg, process_api_id_step)
+
+def process_api_id_step(message):
+    """Processes the API_ID and asks for the API_HASH."""
+    chat_id = message.chat.id
+    api_id = message.text
+    user_states[chat_id] = {'api_id': api_id}
+    try:
+        bot.delete_message(chat_id, message.message_id)
+    except Exception as e:
+        logging.warning(f"Could not delete API_ID message: {e}")
+    msg = bot.send_message(chat_id, "API_ID received. Now, please enter your API_HASH.", reply_markup=gen_cancel_markup())
+    bot.register_next_step_handler(msg, process_api_hash_step)
+
+def process_api_hash_step(message):
+    """Processes the API_HASH and asks for the phone number."""
+    chat_id = message.chat.id
+    api_hash = message.text
+    user_states[chat_id]['api_hash'] = api_hash
+    try:
+        bot.delete_message(chat_id, message.message_id)
+    except Exception as e:
+        logging.warning(f"Could not delete API_HASH message: {e}")
+    msg = bot.send_message(chat_id, "API_HASH received. Now, please enter your phone number (with country code).", reply_markup=gen_cancel_markup())
+    bot.register_next_step_handler(msg, process_phone_number_step)
+
+def process_phone_number_step(message):
+    """Processes the phone number and attempts to log in."""
+    chat_id = message.chat.id
+    phone_number = message.text
+    user_states[chat_id]['phone_number'] = phone_number
+    try:
+        bot.delete_message(chat_id, message.message_id)
+    except Exception as e:
+        logging.warning(f"Could not delete phone number message: {e}")
+    bot.send_message(chat_id, "Phone number received. Trying to log in...")
+
+    api_id = user_states[chat_id]['api_id']
+    api_hash = user_states[chat_id]['api_hash']
+
+    client = Client(":memory:", api_id=api_id, api_hash=api_hash)
+    try:
+        client.connect()
+        sent_code = client.send_code(phone_number)
+        user_states[chat_id]['phone_code_hash'] = sent_code.phone_code_hash
+        msg = bot.send_message(chat_id, "A code has been sent to your Telegram account. Please enter the code.", reply_markup=gen_cancel_markup())
+        bot.register_next_step_handler(msg, process_telegram_code_step, client)
+    except Exception as e:
+        logging.error(f"An unexpected error occurred during Telegram login: {e}")
+        bot.send_message(chat_id, f"An unexpected error occurred: {e}. Please try /start again.", reply_markup=gen_main_menu())
+        if chat_id in user_states:
+            del user_states[chat_id]
+
+def process_telegram_code_step(message, client):
+    """Processes the Telegram code and completes the login."""
+    chat_id = message.chat.id
+    code = message.text
+    phone_number = user_states[chat_id]['phone_number']
+    phone_code_hash = user_states[chat_id]['phone_code_hash']
+    try:
+        bot.delete_message(chat_id, message.message_id)
+    except Exception as e:
+        logging.warning(f"Could not delete Telegram code message: {e}")
+
+    try:
+        client.sign_in(phone_number, phone_code_hash, code)
+        session_string = client.export_session_string()
+        bot.send_message(chat_id, f"Login successful! Here is your session string:\n\n`{session_string}`", parse_mode="Markdown", reply_markup=gen_main_menu())
+        client.disconnect()
+        if chat_id in user_states:
+            del user_states[chat_id]
+    except Exception as e:
+        logging.error(f"Failed during Telegram 2FA login: {e}")
+        bot.send_message(chat_id, "2FA login failed. The code may have been incorrect or an error occurred. Please try /start again.", reply_markup=gen_main_menu())
+        if chat_id in user_states:
+            del user_states[chat_id]
+
 
 if __name__ == "__main__":
     logging.info("Session generation bot started.")
