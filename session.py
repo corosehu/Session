@@ -200,11 +200,18 @@ def handle_telegram_login_start(message):
 
 def process_api_id_step(message):
     chat_id = message.chat.id
-    user_states[chat_id] = {'api_id': message.text}
-    try: bot.delete_message(chat_id, message.message_id)
-    except Exception as e: logging.warning(f"Could not delete API_ID message: {e}")
-    msg = bot.send_message(chat_id, "API_ID received. Now, please enter your API_HASH.", reply_markup=gen_cancel_markup())
-    bot.register_next_step_handler(msg, process_api_hash_step)
+    try:
+        api_id = int(message.text)
+        user_states[chat_id] = {'api_id': api_id}
+        try:
+            bot.delete_message(chat_id, message.message_id)
+        except Exception as e:
+            logging.warning(f"Could not delete API_ID message: {e}")
+        msg = bot.send_message(chat_id, "API_ID received. Now, please enter your API_HASH.", reply_markup=gen_cancel_markup())
+        bot.register_next_step_handler(msg, process_api_hash_step)
+    except ValueError:
+        msg = bot.send_message(chat_id, "Invalid API_ID. Please enter a numeric ID.", reply_markup=gen_cancel_markup())
+        bot.register_next_step_handler(msg, process_api_id_step)
 
 def process_api_hash_step(message):
     chat_id = message.chat.id
