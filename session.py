@@ -49,11 +49,11 @@ async def telegram_send_code(client, phone_number):
     finally:
         await client.disconnect()
 
-async def telegram_submit_code(client, phone_code_hash, code):
+async def telegram_submit_code(client, phone_number, phone_code_hash, code):
     """Connects, submits the code, and returns the session string or a 2FA signal."""
     try:
         await client.connect()
-        await client.sign_in(client.phone_number, phone_code_hash, code)
+        await client.sign_in(phone_number, phone_code_hash, code)
         return await client.export_session_string()
     except SessionPasswordNeeded:
         return "2FA_REQUIRED"
@@ -271,7 +271,7 @@ def process_telegram_code_step(message):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        result = loop.run_until_complete(telegram_submit_code(client, state['phone_code_hash'], code))
+        result = loop.run_until_complete(telegram_submit_code(client, state['phone_number'], state['phone_code_hash'], code))
         if result == "2FA_REQUIRED":
             msg = bot.send_message(chat_id, "Two-factor authentication is enabled. Please enter your password.", reply_markup=gen_cancel_markup())
             bot.register_next_step_handler(msg, process_telegram_2fa_step)
