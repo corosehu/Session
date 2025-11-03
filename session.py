@@ -34,45 +34,40 @@ L = instaloader.Instaloader(
     user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 16_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Mobile/15E148 Safari/604.1"
 )
 
-# In-memory dictionary to store user login states
+# In-memory dictionaries to store states and clients
 user_states = {}
+pyrogram_clients = {}
 
 # --- Async Helper Functions for Pyrogram ---
 
-async def telegram_send_code(api_id, api_hash, phone_number):
-    """Creates a client, connects, sends the login code, and returns the phone_code_hash."""
-    client = Client(":memory:", api_id, api_hash, in_memory=True)
+async def telegram_send_code(client, phone_number):
+    """Connects, sends the login code, and returns the phone_code_hash."""
     try:
         await client.connect()
         sent_code = await client.send_code(phone_number)
-        # We must return an intermediate session string to maintain the auth key
-        return await client.export_session_string(), sent_code.phone_code_hash
+        return sent_code.phone_code_hash
     finally:
         await client.disconnect()
 
-async def telegram_submit_code(api_id, api_hash, phone_number, phone_code_hash, intermediate_session, code):
-    """Restores client from intermediate session, submits code, and returns session string or 2FA signal."""
-    client = Client(":memory:", session_string=intermediate_session)
+async def telegram_submit_code(client, phone_number, phone_code_hash, code):
+    """Connects, submits the code, and returns the session string or a 2FA signal."""
     try:
         await client.connect()
         await client.sign_in(phone_number, phone_code_hash, code)
         return await client.export_session_string()
     except SessionPasswordNeeded:
-        # Return a new intermediate session for the 2FA step
-        return "2FA_REQUIRED", await client.export_session_string()
+        return "2FA_REQUIRED"
     finally:
         await client.disconnect()
 
-async def telegram_submit_password(intermediate_session, password):
-    """Restores client from intermediate session, submits 2FA password, and returns final session string."""
-    client = Client(":memory:", session_string=intermediate_session)
+async def telegram_submit_password(client, password):
+    """Connects, submits the 2FA password, and returns the final session string."""
     try:
         await client.connect()
         await client.check_password(password)
         return await client.export_session_string()
     finally:
         await client.disconnect()
-
 
 # --- UI Helper Functions ---
 
@@ -103,6 +98,7 @@ def callback_query(call):
         handle_telegram_login_start(call.message)
     elif call.data == "cb_cancel":
         user_states.pop(chat_id, None)
+        pyrogram_clients.pop(chat_id, None) # Clean up client
         bot.send_message(chat_id, "Operation cancelled.", reply_markup=gen_main_menu())
 
 
@@ -238,20 +234,23 @@ def process_phone_number_step(message):
     bot.send_message(chat_id, "Phone number received. Sending confirmation code...")
     state = user_states[chat_id]
 
+    # Event loop management must happen BEFORE client initialization
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+
+    client = Client(":memory:", state['api_id'], state['api_hash'], in_memory=True)
+    pyrogram_clients[chat_id] = client
+
     try:
-        intermediate_session, phone_code_hash = loop.run_until_complete(
-            telegram_send_code(state['api_id'], state['api_hash'], phone_number)
-        )
+        phone_code_hash = loop.run_until_complete(telegram_send_code(client, phone_number))
         user_states[chat_id]['phone_code_hash'] = phone_code_hash
-        user_states[chat_id]['intermediate_session'] = intermediate_session
         msg = bot.send_message(chat_id, "A code has been sent to your Telegram account. Please enter it.", reply_markup=gen_cancel_markup())
         bot.register_next_step_handler(msg, process_telegram_code_step)
     except Exception as e:
         logging.exception(f"An error occurred while sending Telegram code: {e}")
         bot.send_message(chat_id, f"An error occurred: {e}. Please try /start again.", reply_markup=gen_main_menu())
         user_states.pop(chat_id, None)
+        pyrogram_clients.pop(chat_id, None)
     finally:
         loop.close()
 
@@ -264,24 +263,27 @@ def process_telegram_code_step(message):
         logging.warning(f"Could not delete Telegram code message: {e}")
 
     state = user_states[chat_id]
+    client = pyrogram_clients.get(chat_id)
+    if not client:
+        bot.send_message(chat_id, "Session expired. Please try again.", reply_markup=gen_main_menu())
+        return
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        result = loop.run_until_complete(
-            telegram_submit_code(state['api_id'], state['api_hash'], state['phone_number'], state['phone_code_hash'], state['intermediate_session'], code)
-        )
-        if isinstance(result, tuple) and result[0] == "2FA_REQUIRED":
-            user_states[chat_id]['intermediate_session'] = result[1] # Update session for 2FA
+        result = loop.run_until_complete(telegram_submit_code(client, state['phone_number'], state['phone_code_hash'], code))
+        if result == "2FA_REQUIRED":
             msg = bot.send_message(chat_id, "Two-factor authentication is enabled. Please enter your password.", reply_markup=gen_cancel_markup())
             bot.register_next_step_handler(msg, process_telegram_2fa_step)
         else:
             bot.send_message(chat_id, f"Login successful! Here is your session string:\n\n`{result}`", parse_mode="Markdown", reply_markup=gen_main_menu())
             user_states.pop(chat_id, None)
+            pyrogram_clients.pop(chat_id, None)
     except Exception as e:
         logging.exception(f"Failed during Telegram code verification: {e}")
         bot.send_message(chat_id, f"Login failed: {e}. Please try /start again.", reply_markup=gen_main_menu())
         user_states.pop(chat_id, None)
+        pyrogram_clients.pop(chat_id, None)
     finally:
         loop.close()
 
@@ -293,18 +295,23 @@ def process_telegram_2fa_step(message):
     except Exception as e:
         logging.warning(f"Could not delete 2FA password message: {e}")
 
-    state = user_states[chat_id]
+    client = pyrogram_clients.get(chat_id)
+    if not client:
+        bot.send_message(chat_id, "Session expired. Please try again.", reply_markup=gen_main_menu())
+        return
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        session_string = loop.run_until_complete(telegram_submit_password(state['intermediate_session'], password))
+        session_string = loop.run_until_complete(telegram_submit_password(client, password))
         bot.send_message(chat_id, f"Login successful! Here is your session string:\n\n`{session_string}`", parse_mode="Markdown", reply_markup=gen_main_menu())
     except Exception as e:
         logging.exception(f"Failed during Telegram 2FA login: {e}")
         bot.send_message(chat_id, f"2FA login failed: {e}. Please try /start again.", reply_markup=gen_main_menu())
     finally:
         user_states.pop(chat_id, None)
+        pyrogram_clients.pop(chat_id, None)
+        loop.close()
 
 if __name__ == "__main__":
     logging.info("Session generation bot started.")
