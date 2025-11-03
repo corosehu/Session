@@ -27,7 +27,7 @@ logging.basicConfig(
 try:
     bot = telebot.TeleBot(TELEGRAM_TOKEN)
 except Exception as e:
-    logging.error(f"Failed to initialize Telegram Bot: {e}")
+    logging.exception(f"Failed to initialize Telegram Bot: {e}")
     sys.exit(f"Failed to initialize Telegram Bot: {e}")
 
 L = instaloader.Instaloader(
@@ -41,7 +41,7 @@ user_states = {}
 
 async def telegram_send_code(api_id, api_hash, phone_number):
     """Creates a client, connects, sends the login code, and returns necessary data."""
-    client = Client(":memory:", api_id=int(api_id), api_hash=api_hash, in_memory=True)
+    client = Client(":memory:", api_id=api_id, api_hash=api_hash, in_memory=True)
     try:
         await client.connect()
         sent_code = await client.send_code(phone_number)
@@ -50,11 +50,14 @@ async def telegram_send_code(api_id, api_hash, phone_number):
     finally:
         await client.disconnect()
 
-async def telegram_finish_login(api_id, api_hash, phone_number, phone_code_hash, session_string, code, password=None):
+async def telegram_finish_login(api_id, api_hash, phone_number, phone_code_hash, session_string, code=None, password=None):
     """Restores a client and completes the login to get the final session string."""
-    async with Client(name=":memory:", session_string=session_string, api_id=int(api_id), api_hash=api_hash, in_memory=True) as client:
+    async with Client(name=":memory:", session_string=session_string, api_id=api_id, api_hash=api_hash, in_memory=True) as client:
         try:
-            await client.sign_in(phone_number, phone_code_hash, code)
+            if code:
+                await client.sign_in(phone_number, phone_code_hash, code)
+            else:
+                await client.check_password(password)
         except SessionPasswordNeeded:
             if password:
                 await client.check_password(password)
@@ -140,12 +143,12 @@ def process_password_step(message):
         bot.register_next_step_handler(msg, process_2fa_step, password)
 
     except instaloader.exceptions.BadCredentialsException:
-        logging.error(f"Login failed for {username}: Bad credentials.")
+        logging.exception(f"Login failed for {username}: Bad credentials.")
         bot.send_message(chat_id, "Login failed: The username or password you entered is incorrect. Please try /start again.", reply_markup=gen_main_menu())
         del user_states[chat_id]
 
     except Exception as e:
-        logging.error(f"An unexpected error occurred during login for {username}: {e}")
+        logging.exception(f"An unexpected error occurred during login for {username}: {e}")
         bot.send_message(chat_id, f"An unexpected error occurred: {e}. Please try /start again.", reply_markup=gen_main_menu())
         if chat_id in user_states:
             del user_states[chat_id]
@@ -167,7 +170,7 @@ def process_2fa_step(message, password):
         L.two_factor_login(two_factor_code)
         complete_login(chat_id, username)
     except Exception as e:
-        logging.error(f"Failed during 2FA login for {username}: {e}")
+        logging.exception(f"Failed during 2FA login for {username}: {e}")
         bot.send_message(chat_id, "2FA login failed. The code may have been incorrect or an error occurred. Please try /start again.", reply_markup=gen_main_menu())
         if chat_id in user_states:
             del user_states[chat_id]
@@ -211,16 +214,23 @@ def handle_telegram_login_start(message):
 def process_api_id_step(message):
     chat_id = message.chat.id
     try:
-        api_id = int(message.text)
+        # Strip whitespace and convert to integer
+        api_id = int(message.text.strip())
+        if api_id <= 0:
+            raise ValueError("API_ID must be a positive integer.")
+
         user_states[chat_id] = {'api_id': api_id}
+
         try:
             bot.delete_message(chat_id, message.message_id)
         except Exception as e:
             logging.warning(f"Could not delete API_ID message: {e}")
+
         msg = bot.send_message(chat_id, "API_ID received. Now, please enter your API_HASH.", reply_markup=gen_cancel_markup())
         bot.register_next_step_handler(msg, process_api_hash_step)
-    except ValueError:
-        msg = bot.send_message(chat_id, "Invalid API_ID. Please enter a numeric ID.", reply_markup=gen_cancel_markup())
+
+    except (ValueError, TypeError):
+        msg = bot.send_message(chat_id, "❌ Invalid API_ID. Please enter a valid, positive numeric ID.", reply_markup=gen_cancel_markup())
         bot.register_next_step_handler(msg, process_api_id_step)
 
 def process_api_hash_step(message):
@@ -255,7 +265,7 @@ def process_phone_number_step(message):
         msg = bot.send_message(chat_id, "A code has been sent to your Telegram account. Please enter it.", reply_markup=gen_cancel_markup())
         bot.register_next_step_handler(msg, process_telegram_code_step)
     except Exception as e:
-        logging.error(f"An unexpected error occurred during Telegram login: {e}")
+        logging.exception(f"An unexpected error occurred during Telegram login: {e}")
         bot.send_message(chat_id, f"An error occurred: {e}. Please try /start again.", reply_markup=gen_main_menu())
         user_states.pop(chat_id, None)
     finally:
@@ -287,7 +297,7 @@ def process_telegram_code_step(message):
             bot.send_message(chat_id, f"Login successful! Here is your session string:\n\n`{session_string}`", parse_mode="Markdown", reply_markup=gen_main_menu())
             user_states.pop(chat_id, None)
     except Exception as e:
-        logging.error(f"Failed during Telegram code verification: {e}")
+        logging.exception(f"Failed during Telegram code verification: {e}")
         bot.send_message(chat_id, f"Login failed: {e}. Please try /start again.", reply_markup=gen_main_menu())
         user_states.pop(chat_id, None)
     finally:
@@ -296,8 +306,10 @@ def process_telegram_code_step(message):
 def process_telegram_2fa_step(message):
     chat_id = message.chat.id
     password = message.text
-    try: bot.delete_message(chat_id, message.message_id)
-    except Exception as e: logging.warning(f"Could not delete 2FA password message: {e}")
+    try:
+        bot.delete_message(chat_id, message.message_id)
+    except Exception as e:
+        logging.warning(f"Could not delete 2FA password message: {e}")
 
     state = user_states[chat_id]
 
@@ -309,12 +321,12 @@ def process_telegram_2fa_step(message):
         session_string = loop.run_until_complete(
             telegram_finish_login(
                 state['api_id'], state['api_hash'], state['phone_number'],
-                state['phone_code_hash'], state['session_string'], state.get('code'), password=password
+                state['phone_code_hash'], state['session_string'], password=password
             )
         )
         bot.send_message(chat_id, f"Login successful! Here is your session string:\n\n`{session_string}`", parse_mode="Markdown", reply_markup=gen_main_menu())
     except Exception as e:
-        logging.error(f"Failed during Telegram 2FA login: {e}")
+        logging.exception(f"Failed during Telegram 2FA login: {e}")
         bot.send_message(chat_id, f"2FA login failed: {e}. Please try /start again.", reply_markup=gen_main_menu())
     finally:
         user_states.pop(chat_id, None)
