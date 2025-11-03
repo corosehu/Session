@@ -1,11 +1,20 @@
 import os
+import sys
 import telebot
 import instaloader
 import logging
 
 # --- Configuration ---
-TELEGRAM_TOKEN = os.getenv("8118285986:AAGFGuH_-i3y24Ig5j84eloIIpqFyBCXz9Y")
-CHAT_ID = os.getenv("6827291977")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+
+# Validate that the token is present
+if not TELEGRAM_TOKEN:
+    logging.error("TELEGRAM_TOKEN environment variable not set.")
+    sys.exit("Error: TELEGRAM_TOKEN environment variable not set.")
+if not CHAT_ID:
+    logging.warning("CHAT_ID environment variable not set. Some features might not work as expected.")
+
 
 # Configure logging
 logging.basicConfig(
@@ -18,7 +27,12 @@ logging.basicConfig(
 )
 
 # Initialize bot and instaloader
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
+try:
+    bot = telebot.TeleBot(TELEGRAM_TOKEN)
+except Exception as e:
+    logging.error(f"Failed to initialize Telegram Bot: {e}")
+    sys.exit(f"Failed to initialize Telegram Bot: {e}")
+
 L = instaloader.Instaloader(
     user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 16_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Mobile/15E148 Safari/604.1"
 )
