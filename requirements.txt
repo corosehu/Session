@@ -2,3 +2,5 @@ pyTelegramBotAPI
 instaloader
 pyrogram
 tgcrypto
+requests
+beautifulsoup4

@@ -4,6 +4,9 @@ import telebot
 import instaloader
 import logging
 import asyncio
+import requests
+import random
+from bs4 import BeautifulSoup
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram import Client
 from pyrogram.errors import SessionPasswordNeeded
@@ -13,13 +16,31 @@ TELEGRAM_TOKEN = "7643403624:AAFIFvF1W2FrYHfEmlPiOpJhJbEjr8dYcCA"
 CHAT_ID = "6827291977"
 
 # --- Proxy Configuration (Optional) ---
-# Uncomment and set your proxy details if you want to use one.
-# PROXY = {
-#     "scheme": "http",  # "http", "https" "socks4", "socks5"
-#     "hostname": "127.0.0.1",
-#     "port": 8080,
-# }
-PROXY = None
+def get_random_proxy():
+    """Fetches a random proxy from sslproxies.org."""
+    try:
+        response = requests.get("https://sslproxies.org/", timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        proxies = []
+        for row in soup.find('table', attrs={'class': 'table'}).find_all('tr')[1:]:
+            tds = row.find_all('td')
+            if len(tds) > 1:
+                ip = tds[0].text.strip()
+                port = tds[1].text.strip()
+                proxies.append(f"http://{ip}:{port}")
+        if proxies:
+            proxy_url = random.choice(proxies)
+            proxy_parts = proxy_url.split(":")
+            return {
+                "scheme": proxy_parts[0],
+                "hostname": proxy_parts[1].replace("//", ""),
+                "port": int(proxy_parts[2]),
+            }
+    except Exception as e:
+        logging.warning(f"Could not fetch a random proxy: {e}")
+    return None
+
+PROXY = get_random_proxy()
 
 
 # Configure logging
@@ -45,14 +66,14 @@ except Exception as e:
     logging.exception(f"Failed to initialize Telegram Bot: {e}")
     sys.exit(f"Failed to initialize Telegram Bot: {e}")
 
+if PROXY:
+    proxy_url = f'{PROXY["scheme"]}://{PROXY["hostname"]}:{PROXY["port"]}'
+    os.environ['HTTP_PROXY'] = proxy_url
+    os.environ['HTTPS_PROXY'] = proxy_url
+
 L = instaloader.Instaloader(
     user_agent="Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36"
 )
-if PROXY:
-    L.context.session.proxies = {
-        'http': f'{PROXY["scheme"]}://{PROXY["hostname"]}:{PROXY["port"]}',
-        'https': f'{PROXY["scheme"]}://{PROXY["hostname"]}:{PROXY["port"]}'
-    }
 
 
 # In-memory dictionaries to store states and clients
