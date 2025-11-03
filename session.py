@@ -7,15 +7,8 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram import Client
 
 # --- Configuration ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-
-# Validate that the token is present
-if not TELEGRAM_TOKEN:
-    logging.error("TELEGRAM_TOKEN environment variable not set.")
-    sys.exit("Error: TELEGRAM_TOKEN environment variable not set.")
-if not CHAT_ID:
-    logging.warning("CHAT_ID environment variable not set. Some features might not work as expected.")
+TELEGRAM_TOKEN = "7643403624:AAFIFvF1W2FrYHfEmlPiOpJhJbEjr8dYcCA"
+CHAT_ID = "6827291977"
 
 
 # Configure logging
