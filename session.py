@@ -41,29 +41,24 @@ user_states = {}
 
 async def telegram_send_code(api_id, api_hash, phone_number):
     """Creates a client, connects, sends the login code, and returns necessary data."""
-    client = Client(":memory:", api_id=api_id, api_hash=api_hash, in_memory=True)
-    await client.connect()
-    sent_code = await client.send_code(phone_number)
-    session_string = await client.export_session_string()
-    await client.disconnect()
-    return sent_code.phone_code_hash, session_string
+    async with Client(":memory:", api_id=int(api_id), api_hash=api_hash, in_memory=True) as client:
+        sent_code = await client.send_code(phone_number)
+        session_string = await client.export_session_string()
+        return sent_code.phone_code_hash, session_string
 
 async def telegram_finish_login(api_id, api_hash, phone_number, phone_code_hash, session_string, code, password=None):
     """Restores a client and completes the login to get the final session string."""
-    client = Client(name=":memory:", session_string=session_string, api_id=api_id, api_hash=api_hash, in_memory=True)
-    await client.connect()
-    try:
-        await client.sign_in(phone_number, phone_code_hash, code)
-    except SessionPasswordNeeded:
-        if password:
-            await client.check_password(password)
-        else:
-            await client.disconnect()
-            return "2FA_REQUIRED"
+    async with Client(name=":memory:", session_string=session_string, api_id=int(api_id), api_hash=api_hash, in_memory=True) as client:
+        try:
+            await client.sign_in(phone_number, phone_code_hash, code)
+        except SessionPasswordNeeded:
+            if password:
+                await client.check_password(password)
+            else:
+                return "2FA_REQUIRED"
 
-    final_session_string = await client.export_session_string()
-    await client.disconnect()
-    return final_session_string
+        final_session_string = await client.export_session_string()
+        return final_session_string
 
 
 def gen_main_menu():
