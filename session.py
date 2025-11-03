@@ -234,11 +234,13 @@ def process_phone_number_step(message):
     bot.send_message(chat_id, "Phone number received. Sending confirmation code...")
     state = user_states[chat_id]
 
+    # Event loop management must happen BEFORE client initialization
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     client = Client(":memory:", state['api_id'], state['api_hash'], in_memory=True)
     pyrogram_clients[chat_id] = client
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
     try:
         phone_code_hash = loop.run_until_complete(telegram_send_code(client, phone_number))
         user_states[chat_id]['phone_code_hash'] = phone_code_hash
