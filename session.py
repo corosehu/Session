@@ -4,6 +4,8 @@ import telebot
 import instaloader
 import logging
 import asyncio
+import threading
+import queue
 import requests
 import random
 from bs4 import BeautifulSoup
@@ -17,7 +19,7 @@ CHAT_ID = "6827291977"
 
 # --- Proxy Configuration (Optional) ---
 def get_random_proxy():
-    """Fetches a random proxy from sslproxies.org."""
+    """Fetches a random, working proxy from sslproxies.org."""
     try:
         response = requests.get("https://sslproxies.org/", timeout=10)
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -28,16 +30,34 @@ def get_random_proxy():
                 ip = tds[0].text.strip()
                 port = tds[1].text.strip()
                 proxies.append(f"http://{ip}:{port}")
-        if proxies:
-            proxy_url = random.choice(proxies)
-            proxy_parts = proxy_url.split(":")
-            return {
-                "scheme": proxy_parts[0],
-                "hostname": proxy_parts[1].replace("//", ""),
-                "port": int(proxy_parts[2]),
-            }
+
+        random.shuffle(proxies)
+
+        for proxy_url in proxies:
+            try:
+                proxy_parts = proxy_url.split(":")
+                proxy_dict = {
+                    "scheme": proxy_parts[0],
+                    "hostname": proxy_parts[1].replace("//", ""),
+                    "port": int(proxy_parts[2]),
+                }
+                # Test the proxy
+                test_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getMe"
+                proxies_for_test = {
+                    'http': f'{proxy_dict["scheme"]}://{proxy_dict["hostname"]}:{proxy_dict["port"]}',
+                    'https': f'{proxy_dict["scheme"]}://{proxy_dict["hostname"]}:{proxy_dict["port"]}'
+                }
+                response = requests.get(test_url, proxies=proxies_for_test, timeout=5)
+                if response.status_code == 200:
+                    logging.info(f"Using working proxy: {proxy_url}")
+                    return proxy_dict
+            except Exception:
+                continue # Try the next proxy
+
     except Exception as e:
-        logging.warning(f"Could not fetch a random proxy: {e}")
+        logging.warning(f"Could not fetch or validate a random proxy: {e}")
+
+    logging.warning("No working proxy found. Proceeding without a proxy.")
     return None
 
 PROXY = get_random_proxy()
@@ -52,6 +72,24 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+
+# --- Thread-Safe Asyncio Runner ---
+class AsyncRunner:
+    def __init__(self):
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_forever()
+
+    def run_coroutine(self, coro, *args):
+        future = asyncio.run_coroutine_threadsafe(coro(*args), self.loop)
+        return future.result()
+
+async_runner = AsyncRunner()
+
 
 # Initialize bot and instaloader
 if PROXY:
@@ -286,10 +324,6 @@ def process_phone_number_step(message):
         user_states.pop(chat_id, None)
         return
 
-    # Event loop management must happen BEFORE client initialization
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
     client = Client(
         ":memory:",
         state['api_id'],
@@ -302,7 +336,7 @@ def process_phone_number_step(message):
     pyrogram_clients[chat_id] = client
 
     try:
-        phone_code_hash = loop.run_until_complete(telegram_send_code(client, phone_number))
+        phone_code_hash = async_runner.run_coroutine(telegram_send_code, client, phone_number)
         user_states[chat_id]['phone_code_hash'] = phone_code_hash
         msg = bot.send_message(chat_id, "A code has been sent to your Telegram account. Please enter it.", reply_markup=gen_cancel_markup())
         bot.register_next_step_handler(msg, process_telegram_code_step)
@@ -311,8 +345,6 @@ def process_phone_number_step(message):
         bot.send_message(chat_id, f"An error occurred: {e}. Please try /start again.", reply_markup=gen_main_menu())
         user_states.pop(chat_id, None)
         pyrogram_clients.pop(chat_id, None)
-    finally:
-        loop.close()
 
 def process_telegram_code_step(message):
     chat_id = message.chat.id
@@ -328,10 +360,8 @@ def process_telegram_code_step(message):
         bot.send_message(chat_id, "Session expired. Please try again.", reply_markup=gen_main_menu())
         return
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
     try:
-        result = loop.run_until_complete(telegram_submit_code(client, state['phone_number'], state['phone_code_hash'], code))
+        result = async_runner.run_coroutine(telegram_submit_code, client, state['phone_number'], state['phone_code_hash'], code)
         if result == "2FA_REQUIRED":
             msg = bot.send_message(chat_id, "Two-factor authentication is enabled. Please enter your password.", reply_markup=gen_cancel_markup())
             bot.register_next_step_handler(msg, process_telegram_2fa_step)
@@ -344,8 +374,6 @@ def process_telegram_code_step(message):
         bot.send_message(chat_id, f"Login failed: {e}. Please try /start again.", reply_markup=gen_main_menu())
         user_states.pop(chat_id, None)
         pyrogram_clients.pop(chat_id, None)
-    finally:
-        loop.close()
 
 def process_telegram_2fa_step(message):
     chat_id = message.chat.id
@@ -360,10 +388,8 @@ def process_telegram_2fa_step(message):
         bot.send_message(chat_id, "Session expired. Please try again.", reply_markup=gen_main_menu())
         return
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
     try:
-        session_string = loop.run_until_complete(telegram_submit_password(client, password))
+        session_string = async_runner.run_coroutine(telegram_submit_password, client, password)
         bot.send_message(chat_id, f"Login successful! Here is your session string:\n\n`{session_string}`", parse_mode="Markdown", reply_markup=gen_main_menu())
     except Exception as e:
         logging.exception(f"Failed during Telegram 2FA login: {e}")
@@ -371,7 +397,6 @@ def process_telegram_2fa_step(message):
     finally:
         user_states.pop(chat_id, None)
         pyrogram_clients.pop(chat_id, None)
-        loop.close()
 
 if __name__ == "__main__":
     logging.info("Session generation bot started.")
