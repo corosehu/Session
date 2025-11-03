@@ -41,10 +41,14 @@ user_states = {}
 
 async def telegram_send_code(api_id, api_hash, phone_number):
     """Creates a client, connects, sends the login code, and returns necessary data."""
-    async with Client(":memory:", api_id=int(api_id), api_hash=api_hash, in_memory=True) as client:
+    client = Client(":memory:", api_id=int(api_id), api_hash=api_hash, in_memory=True)
+    try:
+        await client.connect()
         sent_code = await client.send_code(phone_number)
         session_string = await client.export_session_string()
         return sent_code.phone_code_hash, session_string
+    finally:
+        await client.disconnect()
 
 async def telegram_finish_login(api_id, api_hash, phone_number, phone_code_hash, session_string, code, password=None):
     """Restores a client and completes the login to get the final session string."""
@@ -180,7 +184,18 @@ def complete_login(chat_id, username):
     response_message = f"""
 Login successful for `{username}`!
 Session file has been created on the server.
-...
+
+Here are your session details:
+-----------------------------------
+`Your session id`:
+`{session_id}`
+
+`Your cookie id (user id)`:
+`{ds_user_id}`
+
+`X-IG-APP ID`:
+`{x_ig_app_id}`
+-----------------------------------
 """
     bot.send_message(chat_id, response_message, parse_mode="Markdown", reply_markup=gen_main_menu())
     if chat_id in user_states:
