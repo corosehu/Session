@@ -1,0 +1,5 @@
+pyTelegramBotAPI
+instaloader
+pyrogram
+requests
+beautifulsoup4
