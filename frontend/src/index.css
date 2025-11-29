@@ -1,0 +1,51 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary-gold: #D4AF37;
+  --color-primary-blue: #00F0FF;
+  --color-dark-bg: #050510;
+  --color-card-bg: #101020;
+}
+
+@layer base {
+  body {
+    @apply bg-dark-bg text-gray-200 overflow-x-hidden;
+    font-family: 'Poppins', sans-serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Orbitron', sans-serif;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply px-6 py-2 bg-primary-blue text-dark-bg font-bold rounded-none hover:bg-cyan-300 transition-colors duration-300 tracking-wider;
+  }
+
+  .btn-gold {
+    @apply px-6 py-2 bg-primary-gold text-dark-bg font-bold rounded-none hover:bg-yellow-400 transition-colors duration-300 tracking-wider;
+  }
+
+  .input-field {
+    @apply w-full bg-card-bg border border-gray-700 p-3 text-white focus:border-primary-blue focus:outline-none transition-colors duration-300 placeholder-gray-500;
+  }
+
+  .card {
+    @apply bg-card-bg border border-gray-800 p-6 hover:border-primary-blue transition-colors duration-300;
+  }
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #050510;
+}
+::-webkit-scrollbar-thumb {
+  background: #333;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #00F0FF;
+}
