@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+instaloader
+openpyxl
+pandas
+python-multipart
