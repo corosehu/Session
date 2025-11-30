@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+instaloader
+pandas
+openpyxl
+pyTelegramBotAPI
+python-multipart
+requests
