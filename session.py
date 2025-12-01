@@ -151,44 +151,21 @@ class Instagram:
     def _update_cookie_string(self, response=None):
         """Robustly update cookies from jar and headers."""
         try:
-            all_cookies = {}
+            # 1. Get cookies directly from the session jar (most reliable)
+            cookies_dict = self.session.cookies.get_dict()
 
-            # 1. From CookieJar (Persistent)
-            for cookie in self.session.cookies:
-                all_cookies[cookie.name] = cookie.value
-
-            # 2. From Response Cookies (Immediate)
+            # 2. Update with immediate response cookies if provided
             if response:
-                for cookie in response.cookies:
-                    all_cookies[cookie.name] = cookie.value
+                cookies_dict.update(response.cookies.get_dict())
 
-            # 3. Direct Header Parsing (Set-Cookie)
-            if response and 'Set-Cookie' in response.headers:
-                raw_headers = response.headers['Set-Cookie']
-                logger.info(f"Raw Set-Cookie for {self.username}: {raw_headers[:200]}...") # Log partial
-
-                # Simple extraction strategy: find 'sessionid=VALUE;'
-                session_match = re.search(r'sessionid=([^;,\s]+)', raw_headers)
-                if session_match:
-                    val = session_match.group(1)
-                    if val:
-                        all_cookies['sessionid'] = val
-
-            # 4. Fallback check
-            if "sessionid" not in all_cookies and response and hasattr(response, 'text'):
-                 # Extremely rare: sometimes passed in body JSON?
-                 # Ignoring for now as it's non-standard for Insta private API
-                 pass
-
-            self.cookie_string = "; ".join([f"{k}={v}" for k, v in all_cookies.items()])
+            # 3. Construct the cookie string
+            self.cookie_string = "; ".join([f"{key}={value}" for key, value in cookies_dict.items()])
 
             # Debug log
             if "sessionid" in self.cookie_string:
                 logger.info(f"✅ Session ID captured for {self.username}")
             else:
                 logger.warning(f"⚠️ Session ID MISSING. Cookie String len: {len(self.cookie_string)}")
-                if response:
-                    logger.debug(f"All headers: {response.headers}")
 
         except Exception as e:
             logger.error(f"Error updating cookies: {e}")
